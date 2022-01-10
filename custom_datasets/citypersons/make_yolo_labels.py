@@ -1,4 +1,5 @@
-# make labels for training YOLO: (class, center_x, center_y, width, height)
+# make labels for training YOLO
+# (class, id(-1), center_x, center_y, width, height) -> (class, center_x, center_y, width, height)
 
 import os
 import time
