@@ -109,6 +109,7 @@ def parse_opt():
     parser.add_argument("--mot20", type=bool, default=False)
 
     source = "0"
+    source = ""
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--dir-path", default="runs/inference")
