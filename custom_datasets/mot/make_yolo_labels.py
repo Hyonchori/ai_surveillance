@@ -22,16 +22,18 @@ def split_and_make_labels(root_dir, train_split=False, random_state=42, vis=Fals
     train_vid_list = [vid_list[x] for x in sorted(train_idx)]
     val_vid_list = [vid_list[x] for x in val_idx]
 
-    out_img_dir = os.path.join(root_dir, "images")
-    out_label_dir = os.path.join(root_dir, "labels")
-    make_yolo_labels(root_dir, train_vid_list, out_img_dir, out_label_dir, verbose="_train", vis=vis, save=save)
-    make_yolo_labels(root_dir, val_vid_list, out_img_dir, out_label_dir, verbose="_val", vis=vis, save=save)
+    out_img_dir = os.path.join(root_dir)
+    out_label_dir = os.path.join(root_dir)
+    make_yolo_labels(root_dir, train_vid_list, out_img_dir, out_label_dir, verbose="train", vis=vis, save=save)
+    make_yolo_labels(root_dir, val_vid_list, out_img_dir, out_label_dir, verbose="val", vis=vis, save=save)
 
 
-def make_yolo_labels(root_dir, vid_lsit, out_img_dir, out_label_dir, verbose="", vis=False, save=False):
+def make_yolo_labels(root_dir, vid_lsit, out_img_dir, out_label_dir, verbose=None, vis=False, save=False):
+    out_img_dir = os.path.join(out_img_dir, verbose, "images") if verbose is not None else out_img_dir
+    out_label_dir = os.path.join(out_label_dir, verbose, "labels") if verbose is not None else out_label_dir
     if save:
-        os.makedirs(out_img_dir + verbose, exist_ok=True)
-        os.makedirs(out_label_dir + verbose, exist_ok=True)
+        os.makedirs(out_img_dir, exist_ok=True)
+        os.makedirs(out_label_dir, exist_ok=True)
     for vid in vid_lsit:
         vid_dir = os.path.join(root_dir, [x for x in os.listdir(root_dir) if vid in x][0])
         img_dir = os.path.join(vid_dir, "img1")
@@ -60,8 +62,8 @@ def make_yolo_labels(root_dir, vid_lsit, out_img_dir, out_label_dir, verbose="",
                 cv2.imshow("img", img)
                 cv2.waitKey(0)
             if save:
-                out_img_path = os.path.join(out_img_dir + verbose, f"{vid}-{img_name}")
-                out_label_path = os.path.join(out_label_dir + verbose, f"{vid}-{img_name}".replace(".jpg", ".txt"))
+                out_img_path = os.path.join(out_img_dir, f"{vid}-{img_name}")
+                out_label_path = os.path.join(out_label_dir, f"{vid}-{img_name}".replace(".jpg", ".txt"))
                 cv2.imwrite(out_img_path, img)
                 with open(out_label_path, "w") as o:
                     o.write(label)
