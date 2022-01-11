@@ -67,5 +67,5 @@ if __name__ == "__main__":
     train_out_root = os.path.join(root, "labels", "train")
     valid_out_root = os.path.join(root, "labels", "val")
 
-    make_yolo_labels(train_img_root, train_annot_root, train_out_root, vis=False, save=True)
-    make_yolo_labels(valid_img_root, valid_annot_root, valid_out_root, vis=False, save=True)
+    make_yolo_labels(train_img_root, train_annot_root, train_out_root, vis=True, save=False)
+    make_yolo_labels(valid_img_root, valid_annot_root, valid_out_root, vis=False, save=False)
