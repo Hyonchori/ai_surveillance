@@ -135,5 +135,5 @@ if __name__ == "__main__":
     root = "/media/daton/Data/datasets/MOT17"
     train_root = os.path.join(root, "train")
 
-    split_and_make_labels(train_root, train_split=True, vis=False, save=True)
+    split_and_make_labels(train_root, train_split=True, vis=True, save=False)
 

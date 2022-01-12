@@ -32,8 +32,8 @@ def get_citypersons_paths(citypersons_root):
 
 
 def get_crowdhuman_paths(crowdhuman_root):
-    train_img_dir = os.path.join(crowdhuman_root, "Crowdhuman_train", "Images")
-    val_img_dir = os.path.join(crowdhuman_root, "Crowdhuman_val", "Images")
+    train_img_dir = os.path.join(crowdhuman_root, "Crowdhuman_train", "images")
+    val_img_dir = os.path.join(crowdhuman_root, "Crowdhuman_val", "images")
     train_paths = [os.path.join(train_img_dir, x) for x in os.listdir(train_img_dir)]
     val_paths = [os.path.join(val_img_dir, x) for x in os.listdir(val_img_dir)]
     print("\n--- Crowdhuman")
@@ -43,7 +43,7 @@ def get_crowdhuman_paths(crowdhuman_root):
 
 def get_ethz_paths(ethz_root):
     train_paths = []
-    dirs = os.listdir(ethz_root)
+    dirs = [x for x in os.listdir(ethz_root) if "eth" in x]
     for dir in dirs:
         img_dir = os.path.join(ethz_root, dir, "images")
         img_names = os.listdir(img_dir)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     crowd_train_paths, crowd_val_paths = get_crowdhuman_paths(crowdhuman_root)
     ethz_train_paths = get_ethz_paths(ethz_root)
 
-    train_paths = mot_train_paths + crowd_train_paths + city_train_paths + ethz_train_paths
+    train_paths = mot_train_paths + crowd_train_paths + city_train_paths #+ ethz_train_paths
     val_paths = mot_val_paths + crowd_val_paths + city_val_paths
 
     path2txt(train_paths, "train.txt")

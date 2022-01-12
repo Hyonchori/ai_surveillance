@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 
 def make_yolo_labels(root_dir, annot_file, out_name="labels", vis=False, save=False):
-    img_dir = os.path.join(root_dir, "Images")
+    img_dir = os.path.join(root_dir, "images")
     label_dir = os.path.join(root_dir, out_name)
     os.makedirs(label_dir, exist_ok=True)
     with open(annot_file, "r") as f:
