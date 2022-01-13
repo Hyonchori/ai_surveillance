@@ -4,9 +4,9 @@ import cv2
 
 
 if __name__ == "__main__":
-    vid_dir = "/media/daton/Data/datasets/ava/videos_15min"
+    vid_dir = "/media/daton/Data/datasets/ava/videos"
     vid_list = os.listdir(vid_dir)
-    '''for vid in vid_list:
+    for vid in vid_list:
         vid_path = os.path.join(vid_dir, vid)
         cap = cv2.VideoCapture(vid_path)
         total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -16,15 +16,19 @@ if __name__ == "__main__":
             ret, img = cap.read()
             if not ret:
                 break
-        print(cap.get(cv2.CAP_PROP_POS_FRAMES))'''
+        print(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
-    vid = "Vmef_8MY46w.mkv"
+    '''vid = "Vmef_8MY46w.mkv"
     cap = cv2.VideoCapture(os.path.join(vid_dir, vid))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    print(fps)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     while True:
         ret, img = cap.read()
         pos_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
         print("\n---")
         print(pos_frame)
+        cv2.imshow("img", img)
+        cv2.waitKey(1)
         if pos_frame == total_frames:
-            break
+            break'''
