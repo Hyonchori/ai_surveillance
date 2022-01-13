@@ -1,0 +1,3 @@
+PERSON_CLASSES = (
+    "person"
+)
