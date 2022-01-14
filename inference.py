@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 FILE = Path(__file__).absolute()
 if os.path.join(FILE.parents[0], "custom_lib") not in sys.path:
     sys.path.append(os.path.join(FILE.parents[0], "custom_lib"))
-from custom_lib.custom_utils import LOGGER, select_device, increment_path
+from custom_lib.custom_utils import LOGGER, select_device, increment_path, check_file
 from custom_lib.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from custom_lib.names import PERSON_CLASSES
 from custom_lib.predictor import Predictor
@@ -79,6 +79,24 @@ def main(opt):
     person_detector = Predictor(yolo_model, yolo_exp, PERSON_CLASSES, device, half, normalize=True)
     tracker = BYTETracker(opt)
 
+    source = str(source)
+    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
+    is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
+    webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
+    if is_url and is_file:
+        source = check_file(source)
+
+    if webcam:
+        dataset = LoadStreams(source, img_size=yolo_imgsz)
+        bs = len(dataset)
+    else:
+        dataset = LoadImages(source, img_size=yolo_imgsz)
+        bs = 1
+    vid_path, vid_writer = [None] * bs, [None] * bs
+    for path, im, im0s, vid_cap, s in dataset:
+        print("\n---")
+        print(im.shape)
+
 
 def parse_opt():
     parser = argparse.ArgumentParser("Person action recognizer")
@@ -105,6 +123,7 @@ def parse_opt():
     # General arguments
     source = "/home/daton/Downloads/daton_office_02-people_counting.mp4"
     source = "rtsp://datonai:datonai@172.30.1.49:554/stream1"
+    source = "https://youtu.be/WNIccic_178"
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--half", default=True, action="store_true")

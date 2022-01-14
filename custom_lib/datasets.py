@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from custom_utils import LOGGER, clean_str
+from custom_utils import LOGGER, clean_str, check_requirements
 
 
 IMG_FORMATS = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes

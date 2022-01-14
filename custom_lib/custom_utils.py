@@ -6,6 +6,7 @@ import datetime
 import platform
 import subprocess
 import math
+import urllib
 from pathlib import Path
 
 import torch
@@ -104,6 +105,23 @@ def check_img_size(imgsz, s=32, floor=0):
 def clean_str(s):
     # Cleans a string by replacing special characters with underscore _
     return re.sub(pattern="[|@#!¡·$€%&()=?¿^*;:,¨´><+]", repl="_", string=s)
+
+
+def check_file(file, suffix=''):
+    # Search/download file (if necessary) and return path
+    file = str(file)  # convert to str()
+    if Path(file).is_file() or file == '':  # exists
+        return file
+    elif file.startswith(('http:/', 'https:/')):  # download
+        url = str(Path(file)).replace(':/', '://')  # Pathlib turns :// -> :/
+        file = Path(urllib.parse.unquote(file).split('?')[0]).name  # '%2F' to '/', split https://url.com/file.txt?auth
+        if Path(file).is_file():
+            print(f'Found {url} locally at {file}')  # file already exists
+        else:
+            print(f'Downloading {url} to {file}...')
+            torch.hub.download_url_to_file(url, file)
+            assert Path(file).exists() and Path(file).stat().st_size > 0, f'File download failed: {url}'  # check
+        return file
 
 
 def check_requirements(requirements='requirements.txt', exclude=(), install=True):
