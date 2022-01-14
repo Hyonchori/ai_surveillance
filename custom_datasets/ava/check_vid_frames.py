@@ -4,7 +4,7 @@ import cv2
 
 
 if __name__ == "__main__":
-    vid_dir = "/media/daton/Data/datasets/ava/videos"
+    vid_dir = "/media/daton/Data/datasets/ava/videos_15min"
     vid_list = os.listdir(vid_dir)
     for vid in vid_list:
         vid_path = os.path.join(vid_dir, vid)
