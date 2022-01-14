@@ -16,7 +16,12 @@ from yolox_byte.yolox.utils import fuse_model, get_model_info, postprocess, vis
 from yolox_byte.yolox.tracker.byte_tracker import BYTETracker
 from yolox_byte.yolox.utils.visualize import plot_tracking
 
-from custom_lib.custom_utils import select_device, increment_path
+warnings.filterwarnings("ignore")
+FILE = Path(__file__).absolute()
+if os.path.join(FILE.parents[0], "custom_lib") not in sys.path:
+    sys.path.append(os.path.join(FILE.parents[0], "custom_lib"))
+from custom_lib.custom_utils import LOGGER, select_device, increment_path
+from custom_lib.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from custom_lib.names import PERSON_CLASSES
 from custom_lib.predictor import Predictor
 
@@ -121,8 +126,6 @@ def parse_opt():
 
 
 if __name__ == "__main__":
-    warnings.filterwarnings("ignore")
-    FILE = Path(__file__).absolute()
     opt = parse_opt()
     main(opt)
 
