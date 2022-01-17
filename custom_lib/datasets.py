@@ -80,13 +80,13 @@ class LoadImages:
             s = f'image {self.count}/{self.nf} {path}: '
 
         # Padded resize
-        img = letterbox(img0, self.img_size, stride=self.stride, auto=self.auto)[0]
+        img, ratio, (dw, dh) = letterbox(img0, self.img_size, stride=self.stride, auto=self.auto)
 
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img = np.ascontiguousarray(img)
 
-        return path, img, img0, self.cap, s
+        return path, img, img0, self.cap, s, [(ratio, (dw, dh))]
 
     def new_video(self, path):
         self.frame = 0
@@ -171,16 +171,17 @@ class LoadStreams:
 
         # Letterbox
         img0 = self.imgs.copy()
-        img = [letterbox(x, self.img_size, stride=self.stride, auto=self.rect and self.auto)[0] for x in img0]
+        letterboxes = [letterbox(x, self.img_size, stride=self.stride, auto=self.rect and self.auto) for x in img0]
+        resize_params = [x[1:] for x in letterboxes]
 
         # Stack
-        img = np.stack(img, 0)
+        img = np.stack([x[0] for x in letterboxes], 0)
 
         # Convert
         img = img[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW
         img = np.ascontiguousarray(img)
 
-        return self.sources, img, img0, None, ''
+        return self.sources, img, img0, None, "", resize_params
 
     def __len__(self):
         return len(self.sources)  # 1E12 frames = 32 streams at 30 FPS for 30 years

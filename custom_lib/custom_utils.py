@@ -25,6 +25,27 @@ def set_logging(name=None, verbose=True):
 LOGGER = set_logging(__name__)  # define globally (used in train.py, val.py, detect.py, etc.)
 
 
+class Colors:
+    # Ultralytics color palette https://ultralytics.com/
+    def __init__(self):
+        # hex = matplotlib.colors.TABLEAU_COLORS.values()
+        hex = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
+               '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
+        self.palette = [self.hex2rgb('#' + c) for c in hex]
+        self.n = len(self.palette)
+
+    def __call__(self, i, bgr=False):
+        c = self.palette[int(i) % self.n]
+        return (c[2], c[1], c[0]) if bgr else c
+
+    @staticmethod
+    def hex2rgb(h):  # rgb order (PIL)
+        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+
+
+colors = Colors()  # create instance for 'from utils.plots import colors'
+
+
 def increment_path(path, exist_ok=False, sep='', mkdir=False):
     # Increment file or directory path, i.e. runs/exp --> runs/exp{sep}2, runs/exp{sep}3, ... etc.
     path = Path(path)  # os-agnostic

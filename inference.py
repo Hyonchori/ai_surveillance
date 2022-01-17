@@ -5,9 +5,13 @@ import sys
 import os
 from pathlib import Path
 import warnings
+import time
+from collections import deque
 
 import cv2
+import mmcv
 import torch
+import numpy as np
 
 from yolox_byte.yolox.data.data_augment import ValTransform
 from yolox_byte.yolox.exp import get_exp as get_yolox_exp
@@ -20,12 +24,15 @@ warnings.filterwarnings("ignore")
 FILE = Path(__file__).absolute()
 if os.path.join(FILE.parents[0], "custom_lib") not in sys.path:
     sys.path.append(os.path.join(FILE.parents[0], "custom_lib"))
-from custom_lib.custom_utils import LOGGER, select_device, increment_path, check_file
+from custom_lib.custom_utils import LOGGER, select_device, increment_path, check_file, colors
 from custom_lib.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from custom_lib.names import PERSON_CLASSES
-from custom_lib.predictor import Predictor
+
+from mmcv import Config as get_stdet_cfg
+from custom_lib.stdet import StdetPredictor, get_action_dict, plot_actions
 
 
+@torch.no_grad()
 def main(opt):
     # Load arguments of YOLOv5(main detector)
     yolo_exp = opt.yolo_exp
@@ -44,9 +51,21 @@ def main(opt):
     min_box_area = opt.min_box_area
     mot20 = opt.mot20
 
+    # Load arguments of Spatio-temporal action detector
+    stdet_cfg = get_stdet_cfg.fromfile(opt.stdet_cfg)
+    stdet_cfg.merge_from_dict(opt.stdet_cfg_options)
+    stdet_img_norm_cfg = stdet_cfg["img_norm_cfg"]
+    stdet_weights = opt.stdet_weights
+    stdet_imgsz = opt.stdet_imgsz
+    stdet_interval = opt.stdet_interval
+    stdet_action_score_thr = opt.stdet_action_score_thr
+    stdet_action_dict = get_action_dict(opt.stdet_action_list_path)
+    stdet_label_map_path = opt.stdet_label_map_path
+
     # Load general arguments
     source = opt.source
     device = opt.device
+    normalize = opt.normalize
     half = opt.half
     save_dir = opt.save_dir
     run_name = opt.run_name
@@ -72,12 +91,17 @@ def main(opt):
     if yolo_fuse:
         yolo_model = fuse_model(yolo_model)
     print(f"YOLOX model is loaded... {get_model_info(yolo_model, yolo_imgsz)}")
-
     if half:
         yolo_model.half()
 
-    person_detector = Predictor(yolo_model, yolo_exp, PERSON_CLASSES, device, half, normalize=True)
-    tracker = BYTETracker(opt)
+    # Initialize STDet model
+    stdet_model = StdetPredictor(
+        config=stdet_cfg,
+        checkpoint=stdet_weights,
+        device=device,
+        score_thr=stdet_action_score_thr,
+        label_map_path=stdet_label_map_path
+    )
 
     source = str(source)
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
@@ -93,9 +117,150 @@ def main(opt):
         dataset = LoadImages(source, img_size=yolo_imgsz)
         bs = 1
     vid_path, vid_writer = [None] * bs, [None] * bs
-    for path, im, im0s, vid_cap, s in dataset:
+
+    trackers = [BYTETracker(opt) for _ in range(bs)]
+    stdet_input_imgs = [deque([], maxlen=8) for _ in range(bs)]
+    if device.type != "cpu":
+        yolo_model(torch.zeros(1, 3, *yolo_imgsz).to(device).type_as(next(yolo_model.parameters())))
+        stdet_input = {
+            "img": [torch.zeros(1, 3, 8, *stdet_imgsz).to(device).type_as(next(stdet_model.model.parameters()))],
+            "img_metas": [[{"img_shape": stdet_imgsz}]],
+            "proposals": [[torch.tensor([[0, 0, 5, 5]], device=device).type_as(next(stdet_model.model.parameters()))]],
+            "return_loss": False
+        }
+        stdet_model.model(**stdet_input)
+    for path, im, im0s, vid_cap, s, resize_params in dataset:
         print("\n---")
-        print(im.shape)
+        ts = time.time()
+
+        # Image preprocessing
+        if not webcam:
+            path, im0s = [path], [im0s]
+        t1 = time.time()
+        im = torch.from_numpy(im).to(device)
+        im = im.half() if half else im.float()
+        im /= 255
+        if len(im.shape) == 3:
+            im = im[None]
+        if normalize:
+            im -= torch.Tensor([0.485, 0.456, 0.406]).reshape(3, 1, 1).to(device)
+            im /= torch.Tensor([0.229, 0.224, 0.225]).reshape(3, 1, 1).to(device)
+        t2 = time.time()
+        print(f"img preproc: {t2 - t1:.4f}")
+
+        if use_model["yolox"]:
+            t1 = time.time()
+            yolo_preds = yolo_model(im)
+            yolo_preds = postprocess(yolo_preds, yolo_exp.num_classes, yolo_exp.test_conf, yolo_exp.nmsthre, True)
+            t2 = time.time()
+            print(f"yolo predict: {t2 - t1:.4f}")
+        else:
+            yolo_preds = []
+
+        for i, yolo_pred in enumerate(yolo_preds):
+            proposals = []
+            if use_model["stdet"]:
+                t1 = time.time()
+                stdet_input_size = mmcv.rescale_size((im0s[i].shape[1], im0s[i].shape[0]), (stdet_imgsz[0], np.inf))
+                if "to_rgb" not in stdet_img_norm_cfg and "to_bgr" in stdet_img_norm_cfg:
+                    to_bgr = stdet_img_norm_cfg.pop("to_bgr")
+                    stdet_img_norm_cfg["to_rgb"] = to_bgr
+                stdet_img_norm_cfg["mean"] = np.array(stdet_img_norm_cfg["mean"])
+                stdet_img_norm_cfg["std"] = np.array(stdet_img_norm_cfg["std"])
+                stdet_input_img = mmcv.imresize(im0s[i], stdet_input_size).astype(np.float32)
+                _ = mmcv.imnormalize_(stdet_input_img, **stdet_img_norm_cfg)
+                stdet_input_imgs[i].append(stdet_input_img)
+                ratio = (stdet_input_size[0] / im0s[i].shape[1], stdet_input_size[1] / im0s[i].shape[0])
+                t2 = time.time()
+                print(f"stdet preproc: {t2 - t1:.4f}")
+
+            if use_model["byte"]:
+                if len(yolo_pred) > 0:
+                    t1 = time.time()
+                    _, height, width = im[i].shape
+                    online_targets = trackers[i].update(yolo_pred, im0s[i].shape[:2], [height, width])
+                    online_tlwhs = []
+                    online_ids = []
+                    online_scores = []
+                    for t in online_targets:
+                        tlwh = t.tlwh
+                        tid = t.track_id
+                        vertical = tlwh[2] / tlwh[3] > aspect_ratio_thresh
+                        if tlwh[2] * tlwh[3] > min_box_area and not vertical:
+                            tlwh[0] = tlwh[0] - resize_params[i][1][0] / resize_params[i][0][0]
+                            tlwh[1] = tlwh[1] - resize_params[i][1][1] / resize_params[i][0][1]
+                            xyxy = np.array([tlwh[0], tlwh[1], tlwh[0] + tlwh[2], tlwh[1] + tlwh[3]]) * ratio[0]
+                            online_tlwhs.append(tlwh)
+                            online_ids.append(tid)
+                            online_scores.append(t.score)
+                            proposals.append(xyxy)
+                    t2 = time.time()
+                    print(f"byte predict: {t2 - t1:.4f}")
+
+            if use_model["stdet"]:
+                if len(proposals) > 0:
+                    t1 = time.time()
+                    proposals = np.stack(proposals)
+                    proposals = [[torch.from_numpy(proposals).to(device).float()]]
+                    if len(stdet_input_imgs[i]) == 8:
+                        imgs = np.stack(stdet_input_imgs[i]).transpose(3, 0, 1, 2)
+                        imgs = [torch.from_numpy(imgs).unsqueeze(0).to(device)]
+                        img_meta = [[{"img_shape": stdet_input_img.shape[:2]}]]
+                        return_loss = False
+                        stdet_input = {
+                            "img": imgs,
+                            "img_metas": img_meta,
+                            "proposals": proposals,
+                            "return_loss": return_loss
+                        }
+                        stdet_pred = stdet_model.model(**stdet_input)[0]
+                        stdet_result = []
+                        for _ in range(proposals[0][0].shape[0]):
+                            stdet_result.append([])
+                        for class_id in range(len(stdet_pred)):
+                            if class_id + 1 not in stdet_model.label_map:
+                                continue
+                            for bbox_id in range(proposals[0][0].shape[0]):
+                                if len(stdet_pred[class_id]) != proposals[0][0].shape[0]:
+                                    continue
+                                if stdet_pred[class_id][bbox_id, 4] > stdet_model.score_thr:
+                                    stdet_result[bbox_id].append((stdet_model.label_map[class_id + 1],
+                                                                  stdet_pred[class_id][bbox_id, 4]))
+                        if show_model["stdet"]:
+                            plot_actions(im0s[i], proposals[0][0], stdet_result, ratio, colors, stdet_action_dict)
+                    t2 = time.time()
+                    print(f"stdet: {t2 - t1:.4f}")
+
+
+
+
+        t1 = time.time()
+        if show_model["yolox"] and not show_model["byte"]:
+            for i in range(len(im0s)):
+                if yolo_preds[i] is None:
+                    continue
+                yolo_bbox = yolo_preds[i][:, :4]
+                yolo_bbox[:, 0] = (yolo_bbox[:, 0] - resize_params[i][1][0]) / resize_params[i][0][0]
+                yolo_bbox[:, 1] = (yolo_bbox[:, 1] - resize_params[i][1][1]) / resize_params[i][0][1]
+                yolo_bbox[:, 2] = (yolo_bbox[:, 2] - resize_params[i][1][0]) / resize_params[i][0][0]
+                yolo_bbox[:, 3] = (yolo_bbox[:, 3] - resize_params[i][1][1]) / resize_params[i][0][1]
+                yolo_cls = yolo_preds[i][:, 6]
+                yolo_scores = yolo_preds[i][:, 4] * yolo_preds[i][:, 5]
+                im0s[i] = vis(im0s[i],  yolo_bbox, yolo_scores, yolo_cls, 0.5, PERSON_CLASSES)
+
+        elif show_model["byte"]:
+            for i in range(len(im0s)):
+                #im0s[i] = plot_tracking(im0s[i], online_tlwhs, online_ids)
+                pass
+
+        for i, im0 in enumerate(im0s):
+            cv2.imshow(f"img {i}", im0)
+            cv2.waitKey(1)
+        t2 = time.time()
+        print(f"plot: {t2 - t1:.4f}")
+
+        tf = time.time()
+        print(f"\ttotal: {tf - ts:.4f}")
 
 
 def parse_opt():
@@ -120,12 +285,27 @@ def parse_opt():
     parser.add_argument("--min-box-area", type=float, default=10)
     parser.add_argument("--mot20", default=False, action="store_true")
 
+    # Arguments for STDet(action recognizer)
+    stdet_cfg = f"{FILE.parents[0]}/mmaction2/configs/detection/ava/slowfast_kinetics_pretrained_r50_4x16x1_20e_ava_rgb_custom_classes.py"
+    stdet_weights = f"{FILE.parents[0]}/weights/stdet/slowfast_kinetics_pretrained_r50_4x16x1_20e_ava_rgb_custom/epoch_20.pth"
+    parser.add_argument("--stdet-cfg", type=str, default=stdet_cfg)
+    parser.add_argument("--stdet-weights", type=str, default=stdet_weights)
+    parser.add_argument("--stdet-imgsz", type=int, default=[256])
+    parser.add_argument("--stdet-interval", type=int, default=1)
+    parser.add_argument("--stdet-action-score-thr", type=float, default=0.4)
+    parser.add_argument("--stdet-action-list-path", default=f"{FILE.parents[0]}/weights/stdet/ava_action_list_v2.2.pbtxt")
+    parser.add_argument("--stdet-label-map-path", default=f"{FILE.parents[0]}/mmaction2/tools/data/ava/label_map.txt")
+    parser.add_argument("--stdet-cfg-options", default={})
+
     # General arguments
     source = "/home/daton/Downloads/daton_office_02-people_counting.mp4"
     source = "rtsp://datonai:datonai@172.30.1.49:554/stream1"
-    source = "https://youtu.be/WNIccic_178"
+    #source = "https://youtu.be/WNIccic_178"
+    #source = "source_list.txt"
+    source = "/media/daton/Data/datasets/MOT17/train/MOT17-04-FRCNN/img1"
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
+    parser.add_argument("--normalize", default=True, action="store_true")
     parser.add_argument("--half", default=True, action="store_true")
     parser.add_argument("--save-dir", type=str, default=f"{FILE.parents[0]}/runs/inference")
     parser.add_argument("--run-name", type=str, default="exp")
@@ -135,12 +315,13 @@ def parse_opt():
     parser.add_argument("--hide-conf", default=False, action="store_true")
     parser.add_argument("--use-model", default={"yolox": True,
                                                 "byte": True,
-                                                "stder": True})
+                                                "stdet": True})
     parser.add_argument("--show-model", default={"yolox": True,
                                                 "byte": True,
-                                                "stder": True})
+                                                "stdet": True})
     opt = parser.parse_args()
     opt.yolo_imgsz *= 2 if len(opt.yolo_imgsz) == 1 else 1
+    opt.stdet_imgsz *= 2 if len(opt.stdet_imgsz) == 1 else 1
     return opt
 
 

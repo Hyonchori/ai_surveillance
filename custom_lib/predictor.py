@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import torch
+import numpy as np
 import cv2
 
 from yolox.data.data_augment import ValTransform
@@ -35,6 +36,12 @@ class Predictor(object):
         self.fp16 = fp16
         self.preproc = ValTransform(legacy=normalize)
 
+    def normalize(self, img):
+        img /= 255.0
+        img -= np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+        img /= np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+        return img
+
     def inference(self, img):
         img_info = {"id": 0}
         if isinstance(img, str):
@@ -52,7 +59,8 @@ class Predictor(object):
         img_info["ratio"] = ratio
 
         t3 = time.time()
-        img, _ = self.preproc(img, None, self.test_size)
+        #img, _ = self.preproc(img, None, self.test_size)
+        img = self.normalize(img)
         t4 = time.time()
         print(img.shape)
         print(f"\tpreproc: {t4 - t3:.4}")
