@@ -103,7 +103,7 @@ def plot_action_label(img, actions, st, colors, verbose):
     cv2.rectangle(img, diag0, diag1, colors(verbose + 110, True), -1)
     if len(actions) > 0:
         for (label, score) in actions:
-            text = f"{label}"
+            text = f"{label} {score:.2f}"
             textsize = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, 0.5, 1)[0]
             textwidth = textsize[0]
             diag0 = (location[0] + textwidth, location[1] - 14)

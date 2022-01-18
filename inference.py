@@ -158,19 +158,23 @@ def main(opt):
             yolo_preds = []
 
         for i, yolo_pred in enumerate(yolo_preds):
+            p, im0, imv = path[i], im0s[i].copy(), im0s[i].copy()
+            p = Path(p)
+            save_path = str(save_dir / "video") if is_video_frames else str(save_dir / p.name)
+
             proposals = []
             if use_model["stdet"]:
                 t1 = time.time()
-                stdet_input_size = mmcv.rescale_size((im0s[i].shape[1], im0s[i].shape[0]), (stdet_imgsz[0], np.inf))
+                stdet_input_size = mmcv.rescale_size((im0.shape[1], im0.shape[0]), (stdet_imgsz[0], np.inf))
                 if "to_rgb" not in stdet_img_norm_cfg and "to_bgr" in stdet_img_norm_cfg:
                     to_bgr = stdet_img_norm_cfg.pop("to_bgr")
                     stdet_img_norm_cfg["to_rgb"] = to_bgr
                 stdet_img_norm_cfg["mean"] = np.array(stdet_img_norm_cfg["mean"])
                 stdet_img_norm_cfg["std"] = np.array(stdet_img_norm_cfg["std"])
-                stdet_input_img = mmcv.imresize(im0s[i], stdet_input_size).astype(np.float32)
+                stdet_input_img = mmcv.imresize(im0, stdet_input_size).astype(np.float32)
                 _ = mmcv.imnormalize_(stdet_input_img, **stdet_img_norm_cfg)
                 stdet_input_imgs[i].append(stdet_input_img)
-                ratio = (stdet_input_size[0] / im0s[i].shape[1], stdet_input_size[1] / im0s[i].shape[0])
+                ratio = (stdet_input_size[0] / im0.shape[1], stdet_input_size[1] / im0.shape[0])
                 t2 = time.time()
                 print(f"stdet preproc: {t2 - t1:.4f}")
 
@@ -178,7 +182,7 @@ def main(opt):
                 if len(yolo_pred) > 0:
                     t1 = time.time()
                     _, height, width = im[i].shape
-                    online_targets = trackers[i].update(yolo_pred, im0s[i].shape[:2], [height, width])
+                    online_targets = trackers[i].update(yolo_pred, im0.shape[:2], [height, width])
                     online_tlwhs = []
                     online_ids = []
                     online_scores = []
@@ -189,11 +193,12 @@ def main(opt):
                         if tlwh[2] * tlwh[3] > min_box_area and not vertical:
                             tlwh[0] = tlwh[0] - resize_params[i][1][0] / resize_params[i][0][0]
                             tlwh[1] = tlwh[1] - resize_params[i][1][1] / resize_params[i][0][1]
-                            xyxy = np.array([tlwh[0], tlwh[1], tlwh[0] + tlwh[2], tlwh[1] + tlwh[3]]) * ratio[0]
+                            if use_model["stdet"]:
+                                xyxy = np.array([tlwh[0], tlwh[1], tlwh[0] + tlwh[2], tlwh[1] + tlwh[3]]) * ratio[0]
+                                proposals.append(xyxy)
                             online_tlwhs.append(tlwh)
                             online_ids.append(tid)
                             online_scores.append(t.score)
-                            proposals.append(xyxy)
                     t2 = time.time()
                     print(f"byte predict: {t2 - t1:.4f}")
 
@@ -226,17 +231,11 @@ def main(opt):
                                 if stdet_pred[class_id][bbox_id, 4] > stdet_model.score_thr:
                                     stdet_result[bbox_id].append((stdet_model.label_map[class_id + 1],
                                                                   stdet_pred[class_id][bbox_id, 4]))
-                        if show_model["stdet"]:
-                            plot_actions(im0s[i], proposals[0][0], stdet_result, ratio, colors, stdet_action_dict)
                     t2 = time.time()
                     print(f"stdet: {t2 - t1:.4f}")
 
-
-
-
-        t1 = time.time()
-        if show_model["yolox"] and not show_model["byte"]:
-            for i in range(len(im0s)):
+            t1 = time.time()
+            if show_model["yolox"] and not show_model["byte"]:
                 if yolo_preds[i] is None:
                     continue
                 yolo_bbox = yolo_preds[i][:, :4]
@@ -246,19 +245,44 @@ def main(opt):
                 yolo_bbox[:, 3] = (yolo_bbox[:, 3] - resize_params[i][1][1]) / resize_params[i][0][1]
                 yolo_cls = yolo_preds[i][:, 6]
                 yolo_scores = yolo_preds[i][:, 4] * yolo_preds[i][:, 5]
-                im0s[i] = vis(im0s[i],  yolo_bbox, yolo_scores, yolo_cls, 0.5, PERSON_CLASSES)
+                imv = vis(imv,  yolo_bbox, yolo_scores, yolo_cls, 0.5, PERSON_CLASSES)
 
-        elif show_model["byte"]:
-            for i in range(len(im0s)):
-                #im0s[i] = plot_tracking(im0s[i], online_tlwhs, online_ids)
-                pass
+            elif show_model["byte"]:
+                imv = plot_tracking(imv, online_tlwhs, online_ids)
 
-        for i, im0 in enumerate(im0s):
-            cv2.imshow(f"img {i}", im0)
-            cv2.waitKey(1)
-        t2 = time.time()
-        print(f"plot: {t2 - t1:.4f}")
+            if show_model["stdet"]:
+                plot_actions(imv, proposals[0][0], stdet_result, ratio, colors, stdet_action_dict)
 
+            if any(show_model.values()):
+                cv2.imshow(f"img {i}", imv)
+                cv2.waitKey(1)
+            t2 = time.time()
+            print(f"plot: {t2 - t1:.4f}")
+
+            if save_vid:
+                if dataset.mode == "image" and not is_video_frames:
+                    cv2.imwrite(save_path, imv)
+                elif dataset.mode == "image" and is_video_frames:
+                    if vid_path[i] != save_path:
+                        vid_path[i] = save_path
+                        fps, w, h = 30, imv.shape[1], imv.shape[0]
+                        save_path += '.mp4'
+                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer[i].write(imv)
+                else:
+                    if vid_path[i] != save_path:  # new video
+                        vid_path[i] = save_path
+                        if isinstance(vid_writer[i], cv2.VideoWriter):
+                            vid_writer[i].release()  # release previous video writer
+                        if vid_cap:  # video
+                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        else:  # stream
+                            fps, w, h = 30, imv.shape[1], imv.shape[0]
+                            save_path += '.mp4'
+                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer[i].write(imv)
         tf = time.time()
         print(f"\ttotal: {tf - ts:.4f}")
 
@@ -272,7 +296,7 @@ def parse_opt():
     parser.add_argument("--yolo-exp", type=str, default=yolo_exp)
     parser.add_argument("--yolo-name", type=str, default=None)
     parser.add_argument("--yolo-weights", type=str, default=yolo_weights)
-    parser.add_argument("--yolo-imgsz", type=int, default=[640])
+    parser.add_argument("--yolo-imgsz", type=int, default=[1280])
     parser.add_argument("--yolo-conf-thr", type=float, default=0.01)
     parser.add_argument("--yolo-iou-thr", type=float,default=0.7)
     parser.add_argument("--yolo-fuse", default=True, action="store_true")
@@ -301,7 +325,7 @@ def parse_opt():
     source = "/home/daton/Downloads/daton_office_02-people_counting.mp4"
     source = "rtsp://datonai:datonai@172.30.1.49:554/stream1"
     #source = "https://youtu.be/WNIccic_178"
-    #source = "source_list.txt"
+    source = "source_list.txt"
     source = "/media/daton/Data/datasets/MOT17/train/MOT17-04-FRCNN/img1"
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
@@ -315,10 +339,10 @@ def parse_opt():
     parser.add_argument("--hide-conf", default=False, action="store_true")
     parser.add_argument("--use-model", default={"yolox": True,
                                                 "byte": True,
-                                                "stdet": True})
+                                                "stdet": False})
     parser.add_argument("--show-model", default={"yolox": True,
-                                                "byte": True,
-                                                "stdet": True})
+                                                 "byte": True,
+                                                 "stdet": True})
     opt = parser.parse_args()
     opt.yolo_imgsz *= 2 if len(opt.yolo_imgsz) == 1 else 1
     opt.stdet_imgsz *= 2 if len(opt.stdet_imgsz) == 1 else 1
