@@ -95,7 +95,7 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target-cls", type=int, default=2)
+    parser.add_argument("--target-cls", type=int, default=1)
     parser.add_argument("--target_vid", type=str, default=None)
     args = parser.parse_args()
     return args
