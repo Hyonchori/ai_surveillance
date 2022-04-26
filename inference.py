@@ -24,12 +24,20 @@ warnings.filterwarnings("ignore")
 FILE = Path(__file__).absolute()
 if os.path.join(FILE.parents[0], "custom_lib") not in sys.path:
     sys.path.append(os.path.join(FILE.parents[0], "custom_lib"))
-from custom_lib.custom_utils import LOGGER, select_device, increment_path, check_file, colors
-from custom_lib.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
+from custom_lib.custom_utils import select_device, increment_path, check_file, colors, scale_coords
+from custom_lib.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams, letterbox
 from custom_lib.names import PERSON_CLASSES
 
 from mmcv import Config as get_stdet_cfg
 from custom_lib.stdet import StdetPredictor, get_action_dict, plot_actions
+
+sys.path.append(os.path.join(FILE.parents[0].as_posix(), "hrnet", "custom_lib"))
+from hrnet.custom_lib import hrnet_models
+from hrnet.custom_lib.config import cfg as hrnet_cfg
+from hrnet.custom_lib.config import update_config as update_hrnet_config
+from hrnet.custom_lib.hrnet_utils.inference_utils import draw_pose, box_to_center_scale, \
+    get_pose_estimation_prediction_from_batch, get_pose_estimation_prediction, transform, \
+    draw_keypoints
 
 
 @torch.no_grad()
@@ -62,6 +70,11 @@ def main(opt):
     stdet_action_dict = get_action_dict(opt.stdet_action_list_path)
     stdet_label_map_path = opt.stdet_label_map_path
 
+    # Load arguments for HRNet
+    update_hrnet_config(hrnet_cfg, opt)
+    hrnet_vis_thr = opt.hrnet_vis_thr
+    hrnet_imgsz = hrnet_cfg.MODEL.IMAGE_SIZE
+
     # Load general arguments
     source = opt.source
     device = opt.device
@@ -75,6 +88,7 @@ def main(opt):
     hide_conf = opt.hide_conf
     use_model = opt.use_model
     show_model = {key: use_model[key] & opt.show_model[key] for key in use_model}
+    view_size = opt.view_size
 
     device = select_device(device)
     save_dir = increment_path(Path(save_dir) / run_name, exist_ok=False)
@@ -103,6 +117,17 @@ def main(opt):
         label_map_path=stdet_label_map_path
     )
 
+    # Initialize HRNet
+    hrnet_model = eval(f"hrnet_models.{hrnet_cfg.MODEL.NAME}.get_pose_net")(hrnet_cfg, is_train=False)
+    if hrnet_cfg.TEST.MODEL_FILE:
+        print('=> loading model from {}'.format(hrnet_cfg.TEST.MODEL_FILE))
+        hrnet_model.load_state_dict(torch.load(hrnet_cfg.TEST.MODEL_FILE), strict=False)
+    else:
+        print('expected model defined in config at TEST.MODEL_FILE')
+    hrnet_model = torch.nn.DataParallel(hrnet_model, device_ids=hrnet_cfg.GPUS)
+    hrnet_model.to(device)
+    hrnet_model.eval()
+
     source = str(source)
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
     is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
@@ -129,8 +154,10 @@ def main(opt):
             "return_loss": False
         }
         stdet_model.model(**stdet_input)
+        hrnet_model(torch.zeros(1, 3, *hrnet_imgsz).to(device).type_as(next(hrnet_model.parameters())))
+
     for path, im, im0s, vid_cap, s, resize_params in dataset:
-        print("\n---")
+        print(f"\n--- {im.shape}")
         ts = time.time()
 
         # Image preprocessing
@@ -162,6 +189,9 @@ def main(opt):
             p = Path(p)
             save_path = str(save_dir / "video") if is_video_frames else str(save_dir / p.name)
 
+            if yolo_pred is not None:
+                yolo_pred[:, :4] = scale_coords(im.shape[2:], yolo_pred[:, :4], im0.shape[:2])
+
             proposals = []
             if use_model["stdet"]:
                 t1 = time.time()
@@ -185,16 +215,14 @@ def main(opt):
                 if len(yolo_pred) > 0:
                     t1 = time.time()
                     _, height, width = im[i].shape
-                    online_targets = trackers[i].update(yolo_pred, im0.shape[:2], [height, width])
+                    online_targets = trackers[i].update(yolo_pred, im0.shape[:2], im0.shape[:2])
                     for t in online_targets:
                         tlwh = t.tlwh
                         tid = t.track_id
                         vertical = tlwh[2] / tlwh[3] > aspect_ratio_thresh
                         if tlwh[2] * tlwh[3] > min_box_area and not vertical:
-                            tlwh[0] = tlwh[0] - resize_params[i][1][0] / resize_params[i][0][0]
-                            tlwh[1] = tlwh[1] - resize_params[i][1][1] / resize_params[i][0][1]
-                            if use_model["stdet"]:
-                                xyxy = np.array([tlwh[0], tlwh[1], tlwh[0] + tlwh[2], tlwh[1] + tlwh[3]]) * ratio[0]
+                            if use_model["stdet"] or use_model["hrnet"]:
+                                xyxy = np.array([tlwh[0], tlwh[1], tlwh[0] + tlwh[2], tlwh[1] + tlwh[3]])
                                 proposals.append(xyxy)
                             online_tlwhs.append(tlwh)
                             online_ids.append(tid)
@@ -206,8 +234,8 @@ def main(opt):
                 stdet_result = []
                 if len(proposals) > 0:
                     t1 = time.time()
-                    proposals = np.stack(proposals)
-                    proposals = [[torch.from_numpy(proposals).to(device).float()]]
+                    proposals_stdet = np.stack(proposals) * ratio[0]
+                    proposals_stdet = [[torch.from_numpy(proposals_stdet).to(device).float()]]
                     if len(stdet_input_imgs[i]) == 8:
                         imgs = np.stack(stdet_input_imgs[i]).transpose(3, 0, 1, 2)
                         imgs = [torch.from_numpy(imgs).unsqueeze(0).to(device)]
@@ -216,17 +244,17 @@ def main(opt):
                         stdet_input = {
                             "img": imgs,
                             "img_metas": img_meta,
-                            "proposals": proposals,
+                            "proposals": proposals_stdet,
                             "return_loss": return_loss
                         }
                         stdet_pred = stdet_model.model(**stdet_input)[0]
-                        for _ in range(proposals[0][0].shape[0]):
+                        for _ in range(proposals_stdet[0][0].shape[0]):
                             stdet_result.append([])
                         for class_id in range(len(stdet_pred)):
                             if class_id + 1 not in stdet_model.label_map:
                                 continue
-                            for bbox_id in range(proposals[0][0].shape[0]):
-                                if len(stdet_pred[class_id]) != proposals[0][0].shape[0]:
+                            for bbox_id in range(proposals_stdet[0][0].shape[0]):
+                                if len(stdet_pred[class_id]) != proposals_stdet[0][0].shape[0]:
                                     continue
                                 if stdet_pred[class_id][bbox_id, 4] > stdet_model.score_thr:
                                     stdet_result[bbox_id].append((stdet_model.label_map[class_id + 1],
@@ -234,27 +262,60 @@ def main(opt):
                     t2 = time.time()
                     print(f"stdet: {t2 - t1:.4f}")
 
+            if use_model["hrnet"]:
+                if len(proposals) > 0:
+                    t1 = time.time()
+                    hrnet_input = []
+                    person_centers = []
+                    person_scales = []
+                    for p in proposals:
+                        person_crop = im0[max(0, int(p[1])): int(p[3]), max(0, int(p[0])): int(p[2])]
+                        person_crop_lb, hr_ratio, _ = letterbox(person_crop,
+                                                                (hrnet_cfg.MODEL.IMAGE_SIZE[1], hrnet_cfg.MODEL.IMAGE_SIZE[0]),
+                                                                auto=False)
+                        if 0 in hr_ratio:
+                            continue
+                        center = [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2]
+                        re_scale = [1 / hr_ratio[0] * 1.25 * 1.15, 1 / hr_ratio[1] * 1.25]
+
+                        hrnet_input.append(transform(person_crop_lb).unsqueeze(0))
+                        person_centers.append(center)
+                        person_scales.append(re_scale)
+
+                    hrnet_input = torch.cat(hrnet_input)
+                    kp_preds, kp_confs = get_pose_estimation_prediction_from_batch(hrnet_model,
+                                                                                   hrnet_input,
+                                                                                   person_centers,
+                                                                                   person_scales,
+                                                                                   hrnet_cfg)
+                    t2 = time.time()
+                    print(f"hrnet: {t2 - t1:.4f}")
+
             t1 = time.time()
             if show_model["yolox"] and not show_model["byte"]:
                 if yolo_preds[i] is None:
                     continue
                 yolo_bbox = yolo_preds[i][:, :4]
-                yolo_bbox[:, 0] = (yolo_bbox[:, 0] - resize_params[i][1][0]) / resize_params[i][0][0]
-                yolo_bbox[:, 1] = (yolo_bbox[:, 1] - resize_params[i][1][1]) / resize_params[i][0][1]
-                yolo_bbox[:, 2] = (yolo_bbox[:, 2] - resize_params[i][1][0]) / resize_params[i][0][0]
-                yolo_bbox[:, 3] = (yolo_bbox[:, 3] - resize_params[i][1][1]) / resize_params[i][0][1]
                 yolo_cls = yolo_preds[i][:, 6]
                 yolo_scores = yolo_preds[i][:, 4] * yolo_preds[i][:, 5]
-                imv = vis(imv,  yolo_bbox, yolo_scores, yolo_cls, 0.5, PERSON_CLASSES)
+                imv = vis(imv, yolo_bbox, yolo_scores, yolo_cls, 0.5, PERSON_CLASSES)
 
             elif show_model["byte"]:
                 imv = plot_tracking(imv, online_tlwhs, online_ids)
 
             if show_model["stdet"]:
                 if len(proposals) > 0:
-                    plot_actions(imv, proposals[0][0], stdet_result, ratio, colors, stdet_action_dict)
+                    plot_actions(imv, proposals_stdet[0][0], stdet_result, ratio, colors, stdet_action_dict)
+
+            if show_model["hrnet"]:
+                if len(proposals) > 0:
+                    for kp_pred, kp_conf in zip(kp_preds, kp_confs):
+                        for kpt, kpc in zip(kp_pred, kp_conf):
+                            draw_keypoints(kpt, imv, kpc, hrnet_vis_thr)
 
             if any(show_model.values()):
+                if view_size is not None:
+                    imv = cv2.resize(imv, dsize=view_size)
                 cv2.imshow(f"img {i}", imv)
                 cv2.waitKey(1)
             t2 = time.time()
@@ -293,7 +354,7 @@ def parse_opt():
 
     # Arguments for YOLOX(main person detector)
     yolo_exp = f"{FILE.parents[0]}/yolox_byte/exps/example/mot/yolox_l_mix_det.py"
-    yolo_weights = f"{FILE.parents[0]}/weights/yolox/bytetrack_l_mot17.pth.tar"
+    yolo_weights = f"{FILE.parents[0]}/weights/yolox/best_ckpt.pth.tar"
     parser.add_argument("--yolo-exp", type=str, default=yolo_exp)
     parser.add_argument("--yolo-name", type=str, default=None)
     parser.add_argument("--yolo-weights", type=str, default=yolo_weights)
@@ -324,13 +385,23 @@ def parse_opt():
     parser.add_argument("--stdet-label-map-path", default=f"{FILE.parents[0]}/mmaction2/tools/data/ava/label_map.txt")
     parser.add_argument("--stdet-cfg-options", default={})
 
+    # Arguments for HRNet(skeleton recognizer)
+    hrnet_cfg = f"{FILE.parents[0]}/weights/hrnet/hrnet_config.yaml"
+    parser.add_argument("--hrnet-cfg", type=str, default=hrnet_cfg)
+    parser.add_argument("--hrnet-opts", default=[])
+    parser.add_argument("--hrnet-modelDir", default="")
+    parser.add_argument("--hrnet-logDir", default="")
+    parser.add_argument("--hrnet-dataDir", default="")
+    parser.add_argument("--hrnet-vis-thr", type=float, default=0.6)
+
     # General arguments
     source = "/home/daton/Downloads/daton_office_02-people_counting.mp4"
-    source = "rtsp://datonai:datonai@172.30.1.49:554/stream1"
-    #source = "https://youtu.be/WNIccic_178"
-    source = "source_list.txt"
-    source = "/media/daton/Data/datasets/MOT17/train/MOT17-04-FRCNN/img1"
-    source = "/media/daton/SAMSUNG/3. 연구개발분야/1. 해외환경(1500개)/5. 싸움(200개)/C045304_005.mp4"
+    source = "rtsp://datonai:datonai@172.30.1.24:554/stream1"
+    ##source = "https://youtu.be/WNIccic_178"
+    #source = "source_list.txt"
+    #source = "/media/daton/Data/datasets/MOT17/train/MOT17-04-FRCNN/img1"
+    #source = "/media/daton/SAMSUNG/3. 연구개발분야/1. 해외환경(1500개)/5. 싸움(200개)/C045304_005.mp4"
+    #source = "0"
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--normalize", default=True, action="store_true")
@@ -343,10 +414,13 @@ def parse_opt():
     parser.add_argument("--hide-conf", default=False, action="store_true")
     parser.add_argument("--use-model", default={"yolox": True,
                                                 "byte": True,
-                                                "stdet": True})
+                                                "stdet": True,
+                                                "hrnet": True})
     parser.add_argument("--show-model", default={"yolox": True,
                                                  "byte": True,
-                                                 "stdet": True})
+                                                 "stdet": True,
+                                                 "hrnet": True})
+    parser.add_argument("--view-size", type=int, default=[1280, 720])  # [width, height]
     opt = parser.parse_args()
     opt.yolo_imgsz *= 2 if len(opt.yolo_imgsz) == 1 else 1
     opt.stdet_imgsz *= 2 if len(opt.stdet_imgsz) == 1 else 1
