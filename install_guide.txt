@@ -1,0 +1,26 @@
+# Develop env: Ubuntu 20.04, 2022.05.20
+
+# install pytorch(cuda 11.3)
+pip3 install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu113
+
+# install opencv
+pip3 install opencv-contrib-python
+
+# install Bytetrack(for detection and tracking)
+git clone https://github.com/ifzhang/ByteTrack.git
+cd Bytetrack
+python3 setup.py develop
+
+# install mmcv(for spatio-temporal action detection)
+pip install git+https://github.com/open-mmlab/mim.git
+pip install mmcv-full==1.5.0
+mim install mmdet
+mim install mmaction2 -f https://github.com/open-mmlab/mmaction2.git
+
+# other dependency
+pip3 install loguru
+pip3 install thop
+pip3 install lap
+pip3 install cython-bbox
+pip3 install yacs
+pip3 install pycocotools

@@ -1,4 +1,4 @@
-# Person recognizer: detection(yolox), tracking(byte), action-recognition(spatio-temporal action localization)
+# Person recognizer: detection(yolox), tracking(byte), action-recognition(spatio-temporal action localization), skeleton(HRNet)
 
 import argparse
 import sys
@@ -13,12 +13,11 @@ import mmcv
 import torch
 import numpy as np
 
-from yolox_byte.yolox.data.data_augment import ValTransform
-from yolox_byte.yolox.exp import get_exp as get_yolox_exp
-from yolox_byte.yolox.utils import fuse_model, get_model_info, postprocess, vis
+from ByteTrack.yolox.exp import get_exp as get_yolox_exp
+from ByteTrack.yolox.utils import fuse_model, get_model_info, postprocess, vis
 
-from yolox_byte.yolox.tracker.byte_tracker import BYTETracker
-from yolox_byte.yolox.utils.visualize import plot_tracking
+from ByteTrack.yolox.tracker.byte_tracker import BYTETracker
+from ByteTrack.yolox.utils.visualize import plot_tracking
 
 warnings.filterwarnings("ignore")
 FILE = Path(__file__).absolute()
@@ -35,9 +34,8 @@ sys.path.append(os.path.join(FILE.parents[0].as_posix(), "hrnet", "custom_lib"))
 from hrnet.custom_lib import hrnet_models
 from hrnet.custom_lib.config import cfg as hrnet_cfg
 from hrnet.custom_lib.config import update_config as update_hrnet_config
-from hrnet.custom_lib.hrnet_utils.inference_utils import draw_pose, box_to_center_scale, \
-    get_pose_estimation_prediction_from_batch, get_pose_estimation_prediction, transform, \
-    draw_keypoints
+from hrnet.custom_lib.hrnet_utils.inference_utils import \
+    get_pose_estimation_prediction_from_batch, transform, draw_keypoints
 
 
 @torch.no_grad()
@@ -47,17 +45,11 @@ def main(opt):
     yolo_name = opt.yolo_name
     yolo_weights = opt.yolo_weights
     yolo_imgsz = opt.yolo_imgsz
-    yolo_conf_thr = opt.yolo_conf_thr
-    yolo_iou_thr = opt.yolo_iou_thr
     yolo_fuse = opt.yolo_fuse
 
     # Load arguments of Bytetracker(tracker)
-    track_thresh = opt.track_thresh
-    track_buffer = opt.track_buffer
-    match_thresh = opt.match_thresh
     aspect_ratio_thresh = opt.aspect_ratio_thresh
     min_box_area = opt.min_box_area
-    mot20 = opt.mot20
 
     # Load arguments of Spatio-temporal action detector
     stdet_cfg = get_stdet_cfg.fromfile(opt.stdet_cfg)
@@ -65,7 +57,6 @@ def main(opt):
     stdet_img_norm_cfg = stdet_cfg["img_norm_cfg"]
     stdet_weights = opt.stdet_weights
     stdet_imgsz = opt.stdet_imgsz
-    stdet_interval = opt.stdet_interval
     stdet_action_score_thr = opt.stdet_action_score_thr
     stdet_action_dict = get_action_dict(opt.stdet_action_list_path)
     stdet_label_map_path = opt.stdet_label_map_path
@@ -84,8 +75,6 @@ def main(opt):
     run_name = opt.run_name
     is_video_frames = opt.is_video_frames
     save_vid = opt.save_vid
-    hide_labels = opt.hide_labels
-    hide_conf = opt.hide_conf
     use_model = opt.use_model
     show_model = {key: use_model[key] & opt.show_model[key] for key in use_model}
     view_size = opt.view_size
@@ -178,7 +167,7 @@ def main(opt):
         if use_model["yolox"]:
             t1 = time.time()
             yolo_preds = yolo_model(im)
-            yolo_preds = postprocess(yolo_preds, yolo_exp.num_classes, yolo_exp.test_conf, yolo_exp.nmsthre, True)
+            yolo_preds = postprocess(yolo_preds, yolo_exp.num_classes, yolo_exp.test_conf, yolo_exp.nmsthre)
             t2 = time.time()
             print(f"yolo predict: {t2 - t1:.4f}")
         else:
@@ -353,7 +342,7 @@ def parse_opt():
     parser = argparse.ArgumentParser("Person action recognizer")
 
     # Arguments for YOLOX(main person detector)
-    yolo_exp = f"{FILE.parents[0]}/yolox_byte/exps/example/mot/yolox_l_mix_det.py"
+    yolo_exp = f"{FILE.parents[0]}/ByteTrack/exps/example/mot/yolox_l_mix_det.py"
     yolo_weights = f"{FILE.parents[0]}/weights/yolox/best_ckpt.pth.tar"
     parser.add_argument("--yolo-exp", type=str, default=yolo_exp)
     parser.add_argument("--yolo-name", type=str, default=None)
@@ -405,10 +394,10 @@ def parse_opt():
     parser.add_argument("--source", type=str, default=source)
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--normalize", default=True, action="store_true")
-    parser.add_argument("--half", default=True, action="store_true")
+    parser.add_argument("--half", default=True, action="store_true")  # fp32 -> fp16 (faster inference)
     parser.add_argument("--save-dir", type=str, default=f"{FILE.parents[0]}/runs/inference")
     parser.add_argument("--run-name", type=str, default="exp")
-    parser.add_argument("--is-video-frames", default=True, action="store_true")
+    parser.add_argument("--is-video-frames", default=True, action="store_true")  # when source is extracted images from video
     parser.add_argument("--save-vid", default=True, action="store_true")
     parser.add_argument("--hide-labels", default=False, action="store_true")
     parser.add_argument("--hide-conf", default=False, action="store_true")

@@ -1,0 +1,35 @@
+0. install dependency referencing 'install_guide.txt'
+
+1. open inference.py using python editor
+
+2. view 'parse_opt()'' at line 341
+
+3. check arguments for models and other option(save, view_size, ...)
+
+4. play 'inference.py'
+
+--------------------------------------------------------------------------
+
+주요 arguments
+
+1. source
+- 추론할 이미지, 비디오, 유튜브 링크(또는 그것들이 적힌 텍스트 파일이나 디렉토리 위치)
+
+2. save_vid
+- 추론 결과 저장 여부
+
+3. use_model
+- 추론에 사용할 딥러닝 모델 딕셔너리
+- 사용할 모델의 value를 True로 설정하면 됨
+
+4. show_model
+- 추론 결과를 시각화할 때 사용할 딥러닝 모델 딕셔너리
+- use_model에선 True로 설정하고 show_model에선 False라면 추론 결과엔 반영되지 않음출
+
+yolox - 물체 검출(바운딩 박스)
+byte - 물체 추적(ID 부여)
+stdet - 행동 인식
+hrnet - 스켈레톤 추
+
+5. view_size
+- 추론 결과 이미지 크기 조절
