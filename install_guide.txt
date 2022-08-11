@@ -17,7 +17,7 @@ pip install mmcv-full==1.5.0
 mim install mmdet
 mim install mmaction2 -f https://github.com/open-mmlab/mmaction2.git
 
-# other dependency
+# other dependencies
 pip3 install loguru
 pip3 install thop
 pip3 install lap
